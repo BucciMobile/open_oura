@@ -60,9 +60,14 @@ enum Command {
     },
     /// Drain history events into the database (incremental).
     Sync {
-        /// Also align the ring clock to host UTC before syncing.
-        #[arg(long)]
+        /// Deprecated no-op: the ring clock is now aligned by default.
+        #[arg(long, hide = true)]
         sync_time: bool,
+        /// Do not align the ring clock to host UTC before syncing. Without the
+        /// time-sync anchor the ring writes, nights recorded since its last reboot
+        /// cannot be placed on the calendar and the dashboard withholds them.
+        #[arg(long)]
+        no_sync_time: bool,
     },
     /// Read the ring's latest cached HR / SpO2 values.
     Latest,
@@ -255,7 +260,7 @@ async fn main() -> Result<()> {
         Command::Pair => cmd_pair(&cli).await,
         Command::Info => cmd_info(&cli, &key).await,
         Command::FactoryReset { yes } => cmd_factory_reset(&cli, &key, *yes).await,
-        Command::Sync { sync_time } => cmd_sync(&cli, &key, *sync_time).await,
+        Command::Sync { no_sync_time, .. } => cmd_sync(&cli, &key, !*no_sync_time).await,
         Command::Latest => cmd_latest(&cli, &key).await,
         Command::LiveHr { seconds, raw } => cmd_live_hr(&cli, &key, *seconds, *raw).await,
         Command::Accel { seconds } => cmd_accel(&cli, &key, *seconds).await,
@@ -607,8 +612,20 @@ async fn cmd_sync(cli: &Cli, key: &Option<[u8; 16]>, sync_time: bool) -> Result<
         .context("running app-style stream setup")?;
 
     if sync_time {
-        client.sync_time_app().await.context("syncing time")?;
+        // Same order as the iOS app: the official-app counter form, then the older
+        // unix+timezone form. The anchor event this writes is what dates the history;
+        // a failure is worth a warning, not a failed sync.
+        if let Err(e) = client.sync_time_app().await {
+            tracing::debug!("app-style time sync failed ({e}); trying the legacy form");
+            if let Err(e) = client.sync_time().await {
+                eprintln!("warning: could not align the ring clock ({e}); recent nights may stay undated");
+            }
+        }
     }
+    // Like the iOS app: ask the ring to postprocess its sleep before the drain, so a
+    // finished night's bedtime_period lands in this sync instead of the next one.
+    // Fire-and-forget: a refusal is not a sync failure.
+    let _ = client.check_sleep_analysis(false).await;
 
     let serial = client.serial().await.unwrap_or_else(|_| "unknown".into());
     let info = client.firmware().await.ok();

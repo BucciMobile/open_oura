@@ -105,6 +105,12 @@ behavior:
   its last few events again instead of an empty batch. Events older than the
   requested cursor are dropped as replays and do not advance it, so that pass
   counts as empty and ends the drain (it used to loop forever, 2026-09-24).
+- **Live tail.** The same ring can also keep writing a few *new* events on every
+  pass (7 per pass at bytes_left=0), so an empty pass never comes even with
+  replays filtered (still looping, 2026-09-28). After bytes_left=0, the drain
+  accepts at most `MAX_TAIL_PASSES` (3) small batches (< 32 events) and then
+  stops. Nothing is lost: the cursor is persisted and the next sync resumes.
+  A real backlog arrives in full batches and is not affected.
 - **Batch size.** The app requests `max_events = 65535` — effectively the whole
   backlog as one batch. Since the cursor can only be checkpointed at batch
   boundaries, one giant batch means a dropped link forfeits all progress and
@@ -168,10 +174,15 @@ Validation on 2026-07-01:
 3. Register the app-style stream (`16 01 02`), event categories (`0x18`), and
    parameter sweep.
 4. GetCapabilities -> choose extended vs legacy event path.
-5. SyncTime using the app-style counter packet (`12 09 ... f6`) where supported.
+5. SyncTime using the app-style counter packet (`12 09 ... f6`), falling back to the
+   legacy `12` form. `oura sync` does this by default (`--no-sync-time` to skip): the
+   `time_sync` event it writes is what dates the ring's history.
 6. (optional) firmware / product / battery for metadata.
-7. DataFlush, then drain history events from the persisted cursor; persist each
-   event, ack with `GetEvent(max_events=0)`, and advance the cursor; stop when
-   `bytes_left == 0`.
+7. Trigger the ring's sleep postprocessing (`check_sleep_analysis(false)`), so a
+   finished night's `bedtime_period` lands in this sync.
+8. DataFlush, then drain history events from the persisted cursor; persist each
+   batch with its cursor and advance; stop on an empty pass at `bytes_left == 0`,
+   or after `MAX_TAIL_PASSES` small batches once the ring reports 0 (see above).
+   Do not send the `GetEvent(max_events=0)` ack-fetch (see above).
 
 Do not issue any RData (0x03) for a normal pull.

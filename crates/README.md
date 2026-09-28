@@ -60,7 +60,8 @@ oura --key-file key.hex factory-reset --yes
 # Show / enable measurement features (HR, SpO2 are off after a key-only pairing)
 oura --key-file key.hex features --enable-hr --enable-spo2
 
-# Drain history events into SQLite (incremental; app-style setup + flush/ack)
+# Drain history events into SQLite (incremental). Aligns the ring clock first so the
+# history can be dated (--no-sync-time to skip) and asks the ring to postprocess sleep.
 oura --name "Oura Ring Gen3" --key-file key.hex --db oura.db sync
 
 # Latest cached HR / SpO2 values (ring must be worn)

@@ -100,6 +100,15 @@ const DRAIN_QUIET: Duration = Duration::from_secs(6);
 /// the per-batch round-trip overhead negligible while bounding what a drop can
 /// lose and yielding regular `bytes_left` progress updates.
 const EXT_BATCH_MAX_EVENTS: u16 = 4096;
+/// Once the ring says nothing is left, how many further *small* batches we accept
+/// before calling the drain done. A Gen 3 Horizon (fw 3.4.3) keeps producing a few
+/// fresh events on every pass (7 per pass, ~0.2 s apart, bytes_left=0) so "until a
+/// pass is empty" never ends. Stopping here loses nothing: the cursor is persisted
+/// and the next sync resumes from it.
+const MAX_TAIL_PASSES: u32 = 3;
+/// A batch this small after bytes_left=0 is the ring's live tail, not a backlog
+/// (a real backlog comes back in full 255-event legacy batches).
+const TAIL_BATCH_EVENTS: usize = 32;
 /// A feature's reported status (`0x2f` ext `0x21`): mode/status/state/subscription.
 #[derive(Clone, Copy, Debug)]
 pub struct FeatureStatus {
@@ -447,6 +456,7 @@ impl<T: Transport> OuraClient<T> {
     {
         let mut start = cursor;
         let mut total = 0u32;
+        let mut tail_passes = 0u32;
         // Prefer Ring 5's Android-style extended event drain. It falls back to
         // legacy GetEvent if the ring explicitly reports the extended API as
         // unsupported.
@@ -520,6 +530,18 @@ impl<T: Transport> OuraClient<T> {
             }
             let bytes_left = batch.bytes_left;
             let progressed = batch.progressed(start);
+            let tail = progressed && bytes_left == 0 && batch.events.len() < TAIL_BATCH_EVENTS;
+            if tail {
+                tracing::debug!(
+                    cursor = start,
+                    events = ?batch
+                        .events
+                        .iter()
+                        .map(|e| (e.name, e.timestamp))
+                        .collect::<Vec<_>>(),
+                    "small batch after bytes_left=0 (ring tail)"
+                );
+            }
             if progressed {
                 start = batch.next_cursor;
             }
@@ -556,6 +578,19 @@ impl<T: Transport> OuraClient<T> {
             // events on the next request, which used to leave a night's data on
             // the ring. Keep pulling until a pass comes back empty; on rings that
             // report accurately this costs one extra empty round-trip.
+            if tail {
+                tail_passes += 1;
+                if tail_passes >= MAX_TAIL_PASSES {
+                    tracing::info!(
+                        cursor = start,
+                        passes = tail_passes,
+                        "ring keeps producing a small tail with bytes_left=0; treating it as drained"
+                    );
+                    break;
+                }
+            } else {
+                tail_passes = 0;
+            }
             if bytes_left == 0 {
                 tracing::debug!(cursor = start, "ring reports drained; confirming with one more pass");
             }
@@ -1001,6 +1036,26 @@ mod tests {
             .filter(|request| request.first() == Some(&0x10))
             .count();
         assert_eq!(fetches, 2, "expected GetEvent at cursor 0 then cursor 2");
+    }
+
+    #[tokio::test]
+    async fn legacy_drain_stops_when_the_ring_keeps_producing_a_tail() {
+        // Horizon 3.4.3 (Maxime, 2026-09-28): even with replays filtered, every pass
+        // at bytes_left=0 carries a few events newer than the cursor, so an empty
+        // pass never comes. The drain must stop after MAX_TAIL_PASSES such passes.
+        let mock = MockTransport::new();
+        mock.on("280100", &["290100"]);
+        mock.on("2f0c410000000000000000000010", &["2f020041"]);
+        // cursor 0 → event at t=1; cursor 2 → t=2; cursor 3 → t=3; cursor 4 → t=4 …
+        mock.on("100900000000ffffffffff", &["430801000000746573741106000000000000"]);
+        mock.on("100902000000ffffffffff", &["430802000000746573741106000000000000"]);
+        mock.on("100903000000ffffffffff", &["430803000000746573741106000000000000"]);
+        mock.on("100904000000ffffffffff", &["430804000000746573741106000000000000"]);
+        mock.on("100905000000ffffffffff", &["430805000000746573741106000000000000"]);
+        let client = OuraClient::new(mock).with_quiet(Duration::from_millis(20));
+        let outcome = client.drain_events(0, |_| true, |_| true).await.unwrap();
+        assert_eq!(outcome.events_synced, MAX_TAIL_PASSES);
+        assert_eq!(outcome.next_cursor, MAX_TAIL_PASSES + 1);
     }
 
     #[tokio::test]
