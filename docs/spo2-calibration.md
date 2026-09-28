@@ -3,7 +3,7 @@
 > This path uses **no model file** — just the small calibration constants below
 > (read from the decompiled app). Unlike the activity/sleep/CVA runners, it needs
 > none of Oura's proprietary `.pt` models (which are never committed — see
-> [`docs/model-runners.md`](model-runners.md)).
+> [`docs/model-runners.md`](https://github.com/Th0rgal/open_health/blob/main/docs/model-runners.md) in open_health).
 
 The ring's **`spo2_r_pi_event`** (tag `0x8b`) carries, per sample, an `r`
 (ratio-of-ratios) and a perfusion index (`pi`) — **not** an SpO2 percentage. Two

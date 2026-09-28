@@ -1,33 +1,34 @@
 # open_oura — repo guide for agents
 
-Independent, cloud-free client for the Oura ring: BLE sync + decode in Rust, the daily
-health computations in Rust, the ML models (sleep / CVA / activity) as decrypted
-TorchScript. See `README.md` and `docs/` for the reverse-engineering details.
+Reverse-engineering of the Oura ring (Ring 3/4/5) and an independent, cloud-free Rust
+client: BLE protocol, auth, sync, event decoders, and the metric algorithms ported from
+Oura's `ecore` engine. See `README.md` and `docs/` for the reverse-engineering details.
 
-## ⚠️ Two clients render the same data — keep them in sync
+The user-facing apps (native iOS app + web dashboard) are **not** here: they live in
+[open_health](https://github.com/Th0rgal/open_health), which depends on these crates by
+git `rev`. A change here only reaches the apps once open_health bumps that `rev`.
 
-There are **two user-facing apps** and a change usually belongs in **both**:
+## Layout
 
-- **Web dashboard** — `dashboard/web/` (vanilla JS) served by `crates/oura-cli/src/dashboard.rs`.
-- **Native iOS app** — `apps/ios/OuraApp/` (SwiftUI) on `crates/oura-core` (UniFFI).
+- `crates/oura-protocol` — framing, app-auth (AES), request builders, event-body
+  decoders. Pure, no I/O; unit-tested against real captured packets.
+- `crates/oura-link` — `Transport` trait + `btleplug` BLE, handshake, history-event
+  drain, live HR/ACM, features, RData (`OuraClient`).
+- `crates/oura-analysis` — HRV, SpO2, baselines, sleep summary, scores (ported `ecore`).
+- `crates/oura-store` — SQLite persistence (raw events, readings, sync cursor).
+- `crates/oura-cli` — the `oura` protocol/debug binary.
+- `tools/` — Python research bench (`oura_protocol.py`, `oura_realtime_listener.py`).
 
-Both render the JSON from the **single shared brain `crates/oura-summary` (`build_summary`)**.
+Architecture and module boundaries: `crates/README.md` and `docs/architecture.md`.
 
-Before you finish a feature, check it against **`docs/clients-web-and-ios.md`** (the
-feature ↔ feature map) and apply it where it belongs:
+## Building / testing
 
-- **New computed metric/field** → add once in `oura-summary`; render in **both** `app.js`
-  **and** `OuraApp.swift`.
-- **New visualization/UI** → do it in **both** `app.js` **and** `OuraApp.swift`.
-- **New model** → wire **both** a `tools/run_*_model.py` (web `PythonRunner`) **and** the
-  iOS on-device path (`apps/ios/OuraApp/TorchBridge.mm` + a `*Model.swift`).
+- `cargo build --release` (binary at `target/release/oura`), `cargo test`.
+- Keep the crate APIs used by open_health stable, or update open_health alongside.
 
-If you intentionally do only one client, say so and note it in the "Known gaps" section of
-`docs/clients-web-and-ios.md`.
+## Safety
 
-## Building / running
-
-- Web dashboard: `oura dashboard` (see `dashboard/README.md`).
-- iOS (simulator): `apps/ios/OuraApp/build_run.sh` (model-free) or `build_run_torch.sh`
-  (on-device torch models). TestFlight: `apps/ios/TESTFLIGHT.md`.
-- Models, `libtorch`, `oura.db`, and auth keys are gitignored — never commit them.
+- Destructive commands (`factory-reset`) require `--yes`; never run them against a ring
+  without explicit permission.
+- Oura's proprietary models (`notes/models/`), APKs/decompiled app under `reverse/`,
+  `captures/`, `*.db`, and auth keys are gitignored — never commit them.

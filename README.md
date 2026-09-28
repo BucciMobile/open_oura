@@ -27,7 +27,7 @@ offline. The one genuine cloud-only step is **workout auto-classification**
 (`POST /api/activity-tagging/v2`). See
 [`docs/data-recovery-map.md`](docs/data-recovery-map.md),
 [`docs/algorithms/README.md`](docs/algorithms/README.md), and
-[`docs/model-runners.md`](docs/model-runners.md) for what runs.
+[`docs/model-runners.md`](https://github.com/Th0rgal/open_health/blob/main/docs/model-runners.md) (in open_health) for what runs.
 
 > **Those PyTorch models are Oura's proprietary IP and are NOT included in this
 > repo** (gitignored under `notes/models/`). The runners reference them by path; you
